@@ -42,6 +42,7 @@ PRD_FILE="$SCRIPT_DIR/prd.json"
 PROGRESS_FILE="$SCRIPT_DIR/progress.txt"
 ARCHIVE_DIR="$SCRIPT_DIR/archive"
 LAST_BRANCH_FILE="$SCRIPT_DIR/.last-branch"
+RUN_LOG_DIR="$SCRIPT_DIR/run-logs"
 
 case "$TOOL" in
   codex)
@@ -105,6 +106,12 @@ if [[ ! -f "$PROGRESS_FILE" ]]; then
   echo "Started: $(date)" >> "$PROGRESS_FILE"
   echo "---" >> "$PROGRESS_FILE"
 fi
+
+mkdir -p "$RUN_LOG_DIR"
+
+remaining_story_count() {
+  jq '[.userStories[] | select(.passes != true)] | length' "$PRD_FILE"
+}
 
 run_codex_iteration() {
   local prompt_text
@@ -175,14 +182,29 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
       ;;
   esac
 
+  ITERATION_LOG_FILE="$RUN_LOG_DIR/iteration-$(printf '%03d' "$i").log"
+  printf '%s\n' "$OUTPUT" > "$ITERATION_LOG_FILE"
+
+  REMAINING_STORIES="$(remaining_story_count)"
+  SAID_COMPLETE="0"
   if echo "$OUTPUT" | grep -q "<promise>COMPLETE</promise>"; then
+    SAID_COMPLETE="1"
+  fi
+
+  if [[ "$REMAINING_STORIES" == "0" ]]; then
     echo ""
     echo "Ralph completed all tasks!"
     echo "Completed at iteration $i of $MAX_ITERATIONS"
     exit 0
   fi
 
-  echo "Iteration $i complete. Continuing..."
+  if [[ "$SAID_COMPLETE" == "1" ]]; then
+    echo ""
+    echo "Warning: tool reported COMPLETE at iteration $i, but $REMAINING_STORIES story/stories still have passes=false."
+    echo "Continuing because PRD state is the source of truth."
+  fi
+
+  echo "Iteration $i complete. Remaining stories: $REMAINING_STORIES. Continuing..."
   sleep "$SLEEP_SECONDS"
 done
 

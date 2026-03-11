@@ -10,10 +10,12 @@ You are running inside Codex CLI as one fresh Ralph iteration.
 4. Pick the highest-priority user story where `passes: false`.
 5. Implement that single user story.
 6. Run the quality checks required by the project.
-7. Update nearby `AGENTS.md` files if you discover reusable patterns.
-8. If checks pass, commit all relevant changes with message: `feat: [Story ID] - [Story Title]`.
-9. Update `prd.json` to set `passes: true` for the completed story.
-10. Append your progress to `progress.txt`.
+7. Merge the latest default branch into your working branch before declaring success. Use `main` if it exists, otherwise use `master`.
+8. If the merge produces conflicts, resolve them carefully and run the relevant quality checks again.
+9. After the merged branch passes checks, merge your working branch back into the default branch and push the updated default branch to `origin`.
+10. Update nearby `AGENTS.md` files if you discover reusable patterns.
+11. Only after the default branch has been updated and pushed, update `prd.json` to set `passes: true` for the completed story.
+12. Append your progress to `progress.txt`.
 
 ## Progress Report Format
 
@@ -57,6 +59,7 @@ Do not add story-specific notes or temporary debugging debris.
 - Do not commit broken code.
 - Keep changes focused and minimal.
 - Follow existing code patterns.
+- A story is not complete until the default branch contains the change, the default branch has been pushed to `origin`, and the post-merge checks still pass.
 
 ## Browser Verification
 
@@ -65,6 +68,12 @@ For UI stories, verify behavior in a browser if browser tooling is available in 
 ## Stop Condition
 
 After completing one user story, check whether all stories now have `passes: true`.
+
+Do not mark a story complete if any of these are still pending:
+- merging the latest default branch into your working branch
+- conflict resolution followed by another successful test run
+- merging into the default branch
+- pushing the default branch to `origin`
 
 If all stories are complete, reply with exactly:
 
