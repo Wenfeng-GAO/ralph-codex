@@ -36,7 +36,7 @@ if [[ "$TOOL" != "codex" && "$TOOL" != "amp" && "$TOOL" != "claude" ]]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || pwd)"
 PRD_FILE="$SCRIPT_DIR/prd.json"
 PROGRESS_FILE="$SCRIPT_DIR/progress.txt"
@@ -109,6 +109,19 @@ fi
 run_codex_iteration() {
   local prompt_text
   prompt_text="$(cat "$PROMPT_FILE")"
+  local context_prefix
+  context_prefix=$(
+    cat <<EOF
+Ralph runner context:
+- Project root: $PROJECT_ROOT
+- Prompt file: $PROMPT_FILE
+- PRD file: $PRD_FILE
+- Progress file: $PROGRESS_FILE
+- Tool: codex
+
+EOF
+  )
+  prompt_text="${context_prefix}${prompt_text}"
 
   local -a cmd=("$TOOL_BIN" exec "-C" "$PROJECT_ROOT" "--dangerously-bypass-approvals-and-sandbox")
   if [[ -n "$CODEX_MODEL" ]]; then

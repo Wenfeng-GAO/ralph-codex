@@ -42,7 +42,9 @@ PHYSICAL_PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 
 grep -q "Ralph completed all tasks!" "$TMP_DIR/out.txt"
 grep -q -- "--dangerously-bypass-approvals-and-sandbox" "$LOG_FILE"
-grep -q "Read the PRD at \`prd.json\`" "$LOG_FILE"
+grep -q "Ralph runner context:" "$LOG_FILE"
+grep -q "Read the PRD at the path given in the injected \`Ralph runner context\` block." "$LOG_FILE"
 grep -q -- "-C $PHYSICAL_PROJECT_DIR" "$LOG_FILE"
+grep -q -- "- PRD file: $PHYSICAL_PROJECT_DIR/scripts/ralph/prd.json" "$LOG_FILE"
 
 echo "smoke-codex: ok"

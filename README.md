@@ -266,6 +266,20 @@ This fork includes a Codex integration smoke test with a fake `codex` binary so 
 ./test/smoke-codex.sh
 ```
 
+It also includes a more realistic PRD integration test that verifies one full Ralph iteration can:
+
+- read a real `prd.json`
+- create or switch to the target branch
+- update story pass state
+- append to `progress.txt`
+- create a git commit
+
+Run it with:
+
+```bash
+./test/integration-prd-codex.sh
+```
+
 ## Customizing the Prompt
 
 After copying `CODEX.md`, `prompt.md`, or `CLAUDE.md` to your project, customize the relevant file for your environment:

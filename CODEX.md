@@ -4,8 +4,8 @@ You are running inside Codex CLI as one fresh Ralph iteration.
 
 ## Your Task
 
-1. Read the PRD at `prd.json` in the same directory as this file.
-2. Read the progress log at `progress.txt` and check the `Codebase Patterns` section first.
+1. Read the PRD at the path given in the injected `Ralph runner context` block.
+2. Read the progress log at the path given in the injected `Ralph runner context` block and check the `Codebase Patterns` section first.
 3. Check you are on the correct branch from PRD `branchName`. If not, check it out or create it from `main`.
 4. Pick the highest-priority user story where `passes: false`.
 5. Implement that single user story.
