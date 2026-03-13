@@ -7,10 +7,13 @@ set -euo pipefail
 TOOL="codex"
 MAX_ITERATIONS=10
 SLEEP_SECONDS="${SLEEP_SECONDS:-2}"
+ITERATION_TIMEOUT_SECONDS="${ITERATION_TIMEOUT_SECONDS:-1800}"
+ITERATION_MAX_RETRIES="${ITERATION_MAX_RETRIES:-2}"
 CODEX_BIN="${CODEX_BIN:-codex}"
 AMP_BIN="${AMP_BIN:-amp}"
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 CODEX_MODEL="${CODEX_MODEL:-}"
+CODEX_DISABLE_MCP_SERVERS="${CODEX_DISABLE_MCP_SERVERS:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -113,12 +116,28 @@ remaining_story_count() {
   jq '[.userStories[] | select(.passes != true)] | length' "$PRD_FILE"
 }
 
-run_codex_iteration() {
-  local prompt_text
-  prompt_text="$(cat "$PROMPT_FILE")"
-  local context_prefix
-  context_prefix=$(
-    cat <<EOF
+total_story_count() {
+  jq '.userStories | length' "$PRD_FILE"
+}
+
+completed_story_count() {
+  local total remaining
+  total="$(total_story_count)"
+  remaining="$(remaining_story_count)"
+  echo $((total - remaining))
+}
+
+next_story_info() {
+  jq -r '
+    .userStories[]
+    | select(.passes != true)
+    | [.id, .title]
+    | @tsv
+  ' "$PRD_FILE" | head -n 1
+}
+
+build_context_prefix() {
+  cat <<EOF
 Ralph runner context:
 - Project root: $PROJECT_ROOT
 - Prompt file: $PROMPT_FILE
@@ -127,65 +146,188 @@ Ralph runner context:
 - Tool: codex
 
 EOF
-  )
-  prompt_text="${context_prefix}${prompt_text}"
+}
+
+run_command_with_timeout() {
+  local stdin_file="$1"
+  shift
+
+  local output_file timed_out_file exit_code_file
+  output_file="$(mktemp)"
+  timed_out_file="$(mktemp)"
+  exit_code_file="$(mktemp)"
+
+  python3 - "$ITERATION_TIMEOUT_SECONDS" "$stdin_file" "$output_file" "$timed_out_file" "$exit_code_file" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+timeout_seconds = float(sys.argv[1])
+stdin_file = sys.argv[2]
+output_file = Path(sys.argv[3])
+timed_out_file = Path(sys.argv[4])
+exit_code_file = Path(sys.argv[5])
+command = sys.argv[6:]
+
+stdin_handle = None
+try:
+    if stdin_file:
+        stdin_handle = open(stdin_file, "rb")
+
+    process = subprocess.Popen(
+        command,
+        stdin=stdin_handle,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+
+    timed_out = False
+    try:
+        output, _ = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        output = exc.stdout or ""
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+
+    exit_code = 124 if timed_out else process.returncode
+    output_file.write_text(output or "")
+    timed_out_file.write_text("1\n" if timed_out else "0\n")
+    exit_code_file.write_text(f"{exit_code}\n")
+finally:
+    if stdin_handle is not None:
+        stdin_handle.close()
+PY
+
+  ITERATION_OUTPUT="$(cat "$output_file")"
+  ITERATION_TIMED_OUT="$(tr -d '\n' < "$timed_out_file")"
+  ITERATION_EXIT_CODE="$(tr -d '\n' < "$exit_code_file")"
+  if [[ -n "$ITERATION_OUTPUT" ]]; then
+    printf '%s\n' "$ITERATION_OUTPUT" >&2
+  fi
+
+  rm -f "$output_file" "$timed_out_file" "$exit_code_file"
+}
+
+run_codex_iteration() {
+  local prompt_text
+  prompt_text="$(build_context_prefix)$(cat "$PROMPT_FILE")"
 
   local -a cmd=("$TOOL_BIN" exec "-C" "$PROJECT_ROOT" "--dangerously-bypass-approvals-and-sandbox")
   if [[ -n "$CODEX_MODEL" ]]; then
     cmd+=("-m" "$CODEX_MODEL")
   fi
+  if [[ -n "$CODEX_DISABLE_MCP_SERVERS" ]]; then
+    local server
+    local old_ifs="$IFS"
+    IFS=','
+    for server in $CODEX_DISABLE_MCP_SERVERS; do
+      server="$(echo "$server" | xargs)"
+      if [[ -n "$server" ]]; then
+        cmd+=("-c" "mcp_servers.${server}.enabled=false")
+      fi
+    done
+    IFS="$old_ifs"
+  fi
   cmd+=("$prompt_text")
 
-  set +e
-  local output
-  output="$("${cmd[@]}" 2>&1 | tee /dev/stderr)"
-  set -e
-  printf '%s' "$output"
+  run_command_with_timeout "" "${cmd[@]}"
 }
 
 run_amp_iteration() {
-  local prompt_text
-  prompt_text="$(cat "$PROMPT_FILE")"
-
-  set +e
-  local output
-  output="$(printf '%s\n' "$prompt_text" | "$TOOL_BIN" --dangerously-allow-all 2>&1 | tee /dev/stderr)"
-  set -e
-  printf '%s' "$output"
+  local prompt_file
+  prompt_file="$(mktemp)"
+  printf '%s\n' "$(cat "$PROMPT_FILE")" > "$prompt_file"
+  run_command_with_timeout "$prompt_file" "$TOOL_BIN" --dangerously-allow-all
+  rm -f "$prompt_file"
 }
 
 run_claude_iteration() {
-  set +e
-  local output
-  output="$("$TOOL_BIN" --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee /dev/stderr)"
-  set -e
-  printf '%s' "$output"
+  run_command_with_timeout "$PROMPT_FILE" "$TOOL_BIN" --dangerously-skip-permissions --print
 }
 
 echo "Starting Ralph - Tool: $TOOL - Max iterations: $MAX_ITERATIONS - Project root: $PROJECT_ROOT"
+echo "Iteration timeout: ${ITERATION_TIMEOUT_SECONDS}s - Max retries per story: $ITERATION_MAX_RETRIES"
 
 for i in $(seq 1 "$MAX_ITERATIONS"); do
+  REMAINING_BEFORE_RUN="$(remaining_story_count)"
+  COMPLETED_BEFORE_RUN="$(completed_story_count)"
+  TOTAL_STORIES="$(total_story_count)"
+  NEXT_STORY="$(next_story_info)"
+  if [[ -n "$NEXT_STORY" ]]; then
+    CURRENT_STORY_ID="${NEXT_STORY%%$'\t'*}"
+    CURRENT_STORY_TITLE="${NEXT_STORY#*$'\t'}"
+  else
+    CURRENT_STORY_ID=""
+    CURRENT_STORY_TITLE=""
+  fi
+
   echo ""
   echo "==============================================================="
   echo "  Ralph Iteration $i of $MAX_ITERATIONS ($TOOL)"
   echo "==============================================================="
-
-  case "$TOOL" in
-    codex)
-      OUTPUT="$(run_codex_iteration)"
-      ;;
-    amp)
-      OUTPUT="$(run_amp_iteration)"
-      ;;
-    claude)
-      OUTPUT="$(run_claude_iteration)"
-      ;;
-  esac
-
   ITERATION_LOG_FILE="$RUN_LOG_DIR/iteration-$(printf '%03d' "$i").log"
-  printf '%s\n' "$OUTPUT" > "$ITERATION_LOG_FILE"
+  : > "$ITERATION_LOG_FILE"
+
+  echo "Current story: ${CURRENT_STORY_ID:-none} ${CURRENT_STORY_TITLE}"
+  echo "Remaining stories before run: $REMAINING_BEFORE_RUN"
+  echo "Completed stories before run: $COMPLETED_BEFORE_RUN / $TOTAL_STORIES"
+
+  ATTEMPT=1
+  while true; do
+    echo "Attempt $ATTEMPT of $((ITERATION_MAX_RETRIES + 1)) for ${CURRENT_STORY_ID:-no-story}"
+
+    case "$TOOL" in
+      codex)
+        run_codex_iteration
+        ;;
+      amp)
+        run_amp_iteration
+        ;;
+      claude)
+        run_claude_iteration
+        ;;
+    esac
+
+    {
+      echo "### Attempt $ATTEMPT"
+      echo "Timed out: $ITERATION_TIMED_OUT"
+      echo "Exit code: $ITERATION_EXIT_CODE"
+      printf '%s\n' "$ITERATION_OUTPUT"
+    } >> "$ITERATION_LOG_FILE"
+
+    if [[ "$ITERATION_TIMED_OUT" == "1" ]]; then
+      echo "Iteration $i timed out after ${ITERATION_TIMEOUT_SECONDS}s."
+      if (( ATTEMPT <= ITERATION_MAX_RETRIES )); then
+        echo "Retrying story ${CURRENT_STORY_ID:-unknown} (${ATTEMPT}/${ITERATION_MAX_RETRIES})."
+        ATTEMPT=$((ATTEMPT + 1))
+        continue
+      fi
+
+      echo "Story ${CURRENT_STORY_ID:-unknown} exceeded the retry limit after timeout."
+      exit 1
+    fi
+
+    OUTPUT="$ITERATION_OUTPUT"
+    break
+  done
 
   REMAINING_STORIES="$(remaining_story_count)"
+  COMPLETED_STORIES="$(completed_story_count)"
   SAID_COMPLETE="0"
   if echo "$OUTPUT" | grep -q "<promise>COMPLETE</promise>"; then
     SAID_COMPLETE="1"
@@ -204,7 +346,14 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
     echo "Continuing because PRD state is the source of truth."
   fi
 
-  echo "Iteration $i complete. Remaining stories: $REMAINING_STORIES. Continuing..."
+  NEXT_STORY_AFTER_RUN="$(next_story_info)"
+  if [[ -n "$NEXT_STORY_AFTER_RUN" ]]; then
+    NEXT_STORY_ID="${NEXT_STORY_AFTER_RUN%%$'\t'*}"
+    NEXT_STORY_TITLE="${NEXT_STORY_AFTER_RUN#*$'\t'}"
+    echo "Next story: $NEXT_STORY_ID $NEXT_STORY_TITLE"
+  fi
+
+  echo "Iteration $i complete. Completed stories: $COMPLETED_STORIES / $TOTAL_STORIES. Remaining stories: $REMAINING_STORIES. Continuing..."
   sleep "$SLEEP_SECONDS"
 done
 
