@@ -162,6 +162,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 timeout_seconds = float(sys.argv[1])
@@ -181,16 +182,29 @@ try:
         stdin=stdin_handle,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
         start_new_session=True,
     )
 
+    output_chunks = []
+
+    def forward_output() -> None:
+        assert process.stdout is not None
+        while True:
+            chunk = process.stdout.read(4096)
+            if not chunk:
+                break
+            output_chunks.append(chunk)
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+
+    output_thread = threading.Thread(target=forward_output)
+    output_thread.start()
+
     timed_out = False
     try:
-        output, _ = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as exc:
+        process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
         timed_out = True
-        output = exc.stdout or ""
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -204,6 +218,8 @@ try:
                 pass
             process.wait()
 
+    output_thread.join()
+    output = b"".join(output_chunks).decode("utf-8", errors="replace")
     exit_code = 124 if timed_out else process.returncode
     output_file.write_text(output or "")
     timed_out_file.write_text("1\n" if timed_out else "0\n")
@@ -216,9 +232,6 @@ PY
   ITERATION_OUTPUT="$(cat "$output_file")"
   ITERATION_TIMED_OUT="$(tr -d '\n' < "$timed_out_file")"
   ITERATION_EXIT_CODE="$(tr -d '\n' < "$exit_code_file")"
-  if [[ -n "$ITERATION_OUTPUT" ]]; then
-    printf '%s\n' "$ITERATION_OUTPUT" >&2
-  fi
 
   rm -f "$output_file" "$timed_out_file" "$exit_code_file"
 }

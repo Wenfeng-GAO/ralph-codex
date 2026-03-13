@@ -50,6 +50,7 @@ attempt=$((attempt + 1))
 printf '%s' "$attempt" > "$FAKE_ATTEMPT_FILE"
 
 if [[ "$attempt" -eq 1 ]]; then
+  printf '%s\n' "partial output before timeout"
   sleep 2
   exit 0
 fi
@@ -86,7 +87,10 @@ test "$(cat "$ATTEMPT_FILE")" = "2"
 grep -q "Current story: US-001 Finish after retry" "$TMP_DIR/out.txt"
 grep -q "timed out" "$TMP_DIR/out.txt"
 grep -q "Retrying story US-001" "$TMP_DIR/out.txt"
+grep -q "partial output before timeout" "$TMP_DIR/out.txt"
 grep -q "Ralph completed all tasks!" "$TMP_DIR/out.txt"
 grep -q '"passes": true' "$RALPH_DIR/prd.json"
+grep -q "Timed out: 1" "$RALPH_DIR/run-logs/iteration-001.log"
+grep -q "partial output before timeout" "$RALPH_DIR/run-logs/iteration-001.log"
 
 echo "timeout-retry-codex: ok"
